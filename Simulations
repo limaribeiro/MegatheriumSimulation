@@ -1,0 +1,151 @@
+
+
+rm(list=ls())
+setwd(" ??? INDICATE THE PATCH OF WORKING DIRECTORY")
+
+#Reading files (please, see SUPPLEMENTARY FILES at Journal's website)
+
+suit.HOL <- read.table("data_suitability_ALLmodels_Megatherium_HOL.csv", h=T, sep=",")
+suit.LGM <- read.table("data_suitability_ALLmodels_Megatherium_LGM.csv", h=T, sep=",")
+occur <- as.numeric(read.table("data_occurrences_Megatherium.csv", h=T)[,1], sep=",")
+
+
+#Standardizing suitability values from LGM and Holocene to make them compatible among multiple algorithms. 
+
+library(vegan)
+suit.STD <- decostand(x= rbind(as.matrix(suit.HOL), as.matrix(suit.LGM)), method= "standardize", MARGIN= 2)
+suit.HOL <- suit.STD[1:nrow(suit.HOL), ]
+suit.LGM <- suit.STD[-(1:nrow(suit.HOL)), ]
+rm(suit.STD)
+
+
+#Starting simulations
+
+nsimul= 4000
+ntimes= 100
+names.ENMs <- sub(pattern= ".HOL", replacement= "", x= colnames(suit.HOL))
+sel.models <- matrix(0, nsimul, ncol(suit.HOL), dimnames= list(c(), c(names.ENMs) ))
+output <- matrix(NA, nsimul*ntimes, 15, dimnames= list(c(), c("sel.models", "RangeSize_HOL", "RangeSize_LGM", "delta_RS(LGM-HOL)", "M", "A", "rp", "rh", "Dn", "Kh", "Kp", "mo", "CI", "TE.N1", "TE.N10") ))
+
+
+for(i in 1:nsimul){
+	
+	### 1.CREATING ENSEMBLES FROM RANDOMLY SELECTED ENMs
+	#Two matrices are required - the suitabilities from ENMs for Holocene (suit.HOL) and LGM (suit.LGM)
+	#The output includes a matrix in which selected ENMs are marked as '1', the range size at the LGM and Holocene (using 0.1 quantile from LPT criterium), and the shift in range size between LGM and Holocene ('delta_RS')
+
+	n.models <- sample(1:ncol(suit.HOL), size= 1)
+	id.models <- sample(1:ncol(suit.HOL), size= n.models)
+
+	if(n.models > 1){
+		ensemble.HOL <- apply(suit.HOL[,id.models], 1, mean)
+		ensemble.LGM <- apply(suit.LGM[,id.models], 1, mean)
+		} else {
+				ensemble.HOL <- suit.HOL[,id.models]
+				ensemble.LGM <- suit.LGM[,id.models]
+				}
+	
+	thr <- quantile(ensemble.LGM[which(occur == 1)], 0.1)
+		
+	sel.models[i, id.models] <- 1
+		
+		
+	for(j in 1:ntimes){
+
+
+		output[(j+(ntimes*(i-1))), "sel.models"] <- i
+		output[(j+(ntimes*(i-1))), "RangeSize_HOL"] <- length(which(ensemble.HOL >= thr))
+		output[(j+(ntimes*(i-1))), "RangeSize_LGM"] <- length(which(ensemble.LGM >= thr))
+		output[(j+(ntimes*(i-1))), "delta_RS(LGM-HOL)"] <- length(which(ensemble.HOL >= thr)) - length(which(ensemble.LGM >= thr))
+
+
+		### 2. EXPLORING THE SPACE OF DEMOGRAPHIC PARAMETERS
+		#For each created ensemble, we randomly selected the values for demographic parameters for both Megatherium and human populations across ‘n.times’.
+
+		M <- runif(n= 1, min= 3700, max= 6000)	#body mass (in kg) for genus Megatherium (estimates from Brassey & Gardiner 2015, Bargo 2001, Farina et al 1996, 1998, and  Smith et al. 2003)
+		A <- runif(n= 1, min= 0.3, max= 1) #carcass use (%)
+		rp <- runif(n= 1, min= 0.001, max= 0.01) #Megatherium's growth rate (%)
+		rh <- runif(n= 1, min= 0.002, max= 0.02) #human's growth rate (%)
+		Kh <- runif(n= 1, min= 1000000, max= 4000000) #human's carrying capacity (ind)
+		mo <- runif(n= 1, min= 0.001, max= 0.01) #human's mortality rate (%)
+		CI <- runif(n= 1, min= 5, max= 250) #individual meat consumption (in g)
+
+		output[(j+(ntimes*(i-1))), "M"] <- M
+		output[(j+(ntimes*(i-1))), "A"] <- A
+		output[(j+(ntimes*(i-1))), "rp"] <- rp
+		output[(j+(ntimes*(i-1))), "rh"] <- rh
+		output[(j+(ntimes*(i-1))), "Kh"] <- Kh
+		output[(j+(ntimes*(i-1))), "mo"] <- mo
+		output[(j+(ntimes*(i-1))), "CI"] <- CI
+				
+
+
+		### 2.1.FITTING MEGATHERIUM'S POPULATION DENSITY FROM ITS CLIMATIC SUITABILITY
+		#We assumed that maximum density estimated from allometric equation (Dn ~ 0.27 ind./km2) was achieved in the most suitable habitat at the LGM [max(ensemble.LGM)], which deceases with suitability following a Gaussian curve
+		#The output includes the Megatherium's carrying capacity ('Kp') at the Holocene (assuming population size when humans arrived in South America)
+
+		Dn <- rnorm(n= 1, mean= 0.27, sd= 0.005)
+		suitability <- c(max(ensemble.LGM), ensemble.HOL)	
+		gaussian.Dn <- dnorm(suitability, mean= max(ensemble.LGM), sd= sd(ensemble.LGM))
+		std.Dn <- decostand(gaussian.Dn, method= "range", MARGIN= 2)
+		scaled.Dn <- std.Dn[-1]*Dn
+#		plot(x= ensemble.HOL, y= scaled.Dn)
+		Kp <- sum(scaled.Dn)*3025 #Megatherium's carrying capacity (0.5xo.5o = 3025 km2)
+
+		output[(j+(ntimes*(i-1))), "Dn"] <- Dn
+		output[(j+(ntimes*(i-1))), "Kp"] <- Kp
+		
+		
+		
+		### 3. SIMULATING PREDATOR-PREY DYNAMICS
+		#We assumed that humans arrived in South America at the Pleistocene/Holocene transition (~11,000 years ago), when started hunting the megafauna (including Megatherium). So, the predator-prey dynamics will be simulated across 11,000 years.
+		#We also assumed that Megatherium was in its carrying capacity at that time and a initial human population with 100 individuals.
+		#The output includes the 'time for extintion'; i.e., period (in years) for Megatherium became numerically (N < 1 ind) or ecologicaly extinct (N < 10 inds) under human hunting.
+				
+		NR <- numeric()
+		NRt <- numeric()
+		N <- numeric(); N[1] <- Kp
+		
+		DF <- numeric()
+		HR <- numeric()
+		H <- numeric(); H[1] <- 100
+		
+		id.N1 <- NULL
+		id.N10 <- NULL
+		
+		for(t in 1:11000){
+			rp.stc <- rnorm(1, rp, 0.0001) #simulating environmental stochasticity on 'rp'
+			C <- (CI/1000)*H[t]*365 #amount of meat consumed by the human population in a year (in kg)		
+			NR[t] <- C/(M*A) #necessary (ideal) number of prey to realize the total meat consumption (C)		
+			NRt[t] <- NR[t]*(N[t]/Kp) #actual number of killed prey (considering the decline in prey availability due to hunting)			
+			N[t+1] <- (N[t] + (rp.stc*N[t] * (1- (N[t]/Kp)))) - NRt[t] #population growth of prey			
+			
+			rh.stc <- rnorm(1, rh, 0.0001) #simulating environmental stochasticity on 'rh'
+			DF[t] <- (NR[t] - NRt[t])*M*A #nutritional deficit due to decline in prey availability
+			HR[t] <- mo*(DF[t]/((CI/1000)*365)) #number of humans' deaths due to nutritional deficit
+			H[t+1] <- (H[t] + (rh.stc*H[t] * (1-(H[t]/Kh)))) - HR[t] #population growth of humans
+		
+			if(N[t] < 10){id.N10 <- c(id.N10, t)}
+			if(N[t] < 1){id.N1 <- c(id.N1, t)}
+			
+			}#fecha for 't'
+		
+		 
+		if(length(id.N1) == 0){output[(j+(ntimes*(i-1))), "TE.N1"] <- 11000} else{output[(j+(ntimes*(i-1))), "TE.N1"] <- min(id.N1)}
+		if(length(id.N10) == 0){output[(j+(ntimes*(i-1))), "TE.N10"] <- 11000} else{output[(j+(ntimes*(i-1))), "TE.N10"] <- min(id.N10)}
+				
+		}#ends for 'j'
+	
+
+		print(paste("r=", r, "/i=", i, "/n=", (j+(ntimes*(i-1))), sep=""))
+		print(Sys.time())
+
+	}#ends for 'i'
+
+
+write.table(output, "output_DemographicModels.csv", row.names=F, sep=",") #writting results from demographic models
+write.table(sel.models, "sel_models.csv", row.names=F, sep=",") #writting ENMs selected in each ensemble
+
+
+
+
